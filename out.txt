@@ -1,0 +1,277 @@
+commit cb0b5c07d2e74c7521d45099974637abe7c2d6fa
+Author: Chris Maughan <cmaughan@snarlsoftware.com>
+Date:   Sun Sep 1 17:57:34 2019 +0100
+
+    Nodes
+
+diff --git a/include/nodegraph/model/nodegraph.h b/include/nodegraph/model/nodegraph.h
+index 2eb491a..530c9ff 100644
+--- a/include/nodegraph/model/nodegraph.h
++++ b/include/nodegraph/model/nodegraph.h
+@@ -7,65 +7,26 @@
+ #include <cstdint>
+ #include <cassert>
+ #include <set>
++#include <functional>
+ 
+ namespace NodeGraph
+ {
+ 
+-using AValue = std::variant<float, double, int64_t, bool, std::string>;
+-
+-inline float a_is_real(const AValue& a) { return std::holds_alternative<float>(a) || std::holds_alternative<double>(a); }
+-inline float a_is_string(const AValue& a) { return std::holds_alternative<std::string>(a); }
+-inline float a_is_integer(const AValue& a) { return std::holds_alternative<std::int64_t>(a); }
+-
+inline double a_as_double(const AValue& a) 
+{ 
+    if (std::holds_alternative<double>(a))
+        return std::get<double>(a);
+    else if (std::holds_alternative<float>(a))
+        return (double)std::get<float>(a);
+    else if (std::holds_alternative<int64_t>(a))
+        return (double)std::get<int64_t>(a);
+    assert(!"?");
+    return 0.0;
+}
+
+inline double a_as_float(const AValue& a) 
+{ 
+    if (std::holds_alternative<double>(a))
+        return (float)std::get<double>(a);
+    else if (std::holds_alternative<float>(a))
+        return std::get<float>(a);
+    else if (std::holds_alternative<int64_t>(a))
+        return (float)std::get<int64_t>(a);
+    assert(!"?");
+    return 0.0f;
+}
+
+inline int64_t a_as_integer(const AValue& a) 
+{ 
+    if (std::holds_alternative<double>(a))
+        return (int64_t)std::get<double>(a);
+    else if (std::holds_alternative<float>(a))
+        return (int64_t)std::get<float>(a);
+    else if (std::holds_alternative<int64_t>(a))
+        return std::get<int64_t>(a);
+    assert(!"?");
+    return 0;
+}
+
+inline std::string a_as_string(const AValue& a) 
+{ 
+    if (std::holds_alternative<std::string>(a))
+        return std::get<std::string>(a);
+    assert(!"?");
+    return "";
+}
+-
+-
+-class Node;
++class IFlowData 
++{
++public:
++    virtual ~IFlowData() {}
++};
++using spFlowData = std::shared_ptr<IFlowData>;
++
++using PinValue = std::variant<float, double, int64_t, bool, std::string, spFlowData>;
++
++
++struct Node;
+ 
+ enum class PinType
+ {
++    Data,
+     Float,
+     String,
+ };
+@@ -79,14 +40,14 @@ enum class PinDir
+ // A pin on an audio node; connects (optionally) to another node.
+ struct Pin
+ {
+-    Pin(Node* node, PinType type, PinDir pinDir, const std::string& pinName, AValue pinValue);
++    Pin(Node* node, PinType type, PinDir pinDir, const std::string& pinName, PinValue pinValue);
+ 
+-    static Pin Output(Node* node, const std::string& name = "Out", PinType type = PinType::Float, AValue val = 0.0f)
++    static Pin Output(Node* node, const std::string& name = "Out", PinType type = PinType::Data, PinValue val = (IFlowData*)nullptr)
+     {
+         return Pin(node, type, PinDir::Output, name, val);
+     }
+     
+-    static Pin Input(Node* node, const std::string& name = "In", PinType type = PinType::Float, AValue val = 0.0f)
++    static Pin Input(Node* node, const std::string& name = "In", PinType type = PinType::Data, PinValue val = (IFlowData*)nullptr)
+     {
+         return Pin(node, type, PinDir::Input, name, val);
+     }
+@@ -114,7 +75,7 @@ struct Pin
+     Pin* GetSource() const { return pSource; }
+     Node* GetOwner() const { return owner; }
+     
+-    virtual void Set(const AValue& rhs);
++    virtual void Set(const PinValue& rhs);
+     virtual void SetTarget(Pin* pTarget);
+     virtual void SetSource(Pin* pSource);
+ 
+@@ -131,34 +92,37 @@ protected:
+     PinType type;               // type on the pin
+     PinDir direction;           // The direction of this pin
+     std::string name;           // The name of this pin
+-    AValue value;               // Current value
++    PinValue value;               // Current value
+ 
+     Node* owner = nullptr; // Node that owns this pin
+     Pin* pTarget = nullptr;     // Which pin I'm connected to
+     Pin* pSource = nullptr;     // Which pin I'm connected from 
+     std::string pinId;          // Unique ID for this pin
+ };
+- 
+-class Node
+-{
+-public:
+-    Node() {};
+ 
+-    virtual Pin* GetOutputPin(uint32_t index = 0);
+-    virtual Pin* GetInputPin(uint32_t index = 0);
++using fnCompute = std::function<void(Node*)>;
+ 
+-    virtual Pin& Read(Pin& pin);
+-    virtual Pin& ReadOutput(uint32_t index = 0);
+-    virtual void ConnectTo(Node* pDest, uint32_t outputIndex = 0, uint32_t inputIndex = 0);
++// A node with inputs, outputs and computation
++struct Node
++{
++public:
++    Node(uint32_t node, const std::string& name)
++        : nodeType(node),
++        strName(name)
++    {
++    };
+ 
+-    virtual const char* GetName() const = 0;
+-protected:
+-    virtual void ComputeOutput(Pin& pin) = 0;
+ 
++    uint32_t nodeType;
++    std::string strName;
+     std::vector<Pin> inputs;
+     std::vector<Pin> outputs;
++    fnCompute pCompute;
+ };
+ 
++void node_connect(Node* pSource, Node* pDest, uint32_t outputIndex = 0, uint32_t inputIndex = 0);
++void node_compute(Node* pNode);
++
+ // A collection of nodes
+ class Graph
+ {
+@@ -172,6 +136,38 @@ public:
+         return pNode.get();
+     }
+ 
++    template<class T>
++    std::vector<T*> Find(uint32_t nodeType) const
++    {
++        std::vector<T*> found;
++        for(auto& pNode : nodes)
++        { 
++            if (pNode->nodeType == nodeType)
++                found.emplace_back(static_cast<T*>(pNode.get()));
++        }
++        return found;
++    }
++
++    void CalculateFlowPath()
++    {
++        std::set<Node*> seen;
++        for (auto& pNode : nodes)
++        {
++            auto pFlowInputs = pNode->FindInputs(   )
++            while (pNode->inputs.size() != 0)
++            {
++                pNode = pNode->inputs
++            }
++            if (seen.find(pNode.get()) != seen.end())
++                continue;
++
++            seen.insert(pNode.get());
++
++            if (pNode->)
++        }
++
++    }
++
+     std::set<std::shared_ptr<Node>> nodes;
+ };
+ 
+
+commit ef01c071639a7c9349264364e239d13bdb22e3f0
+Author: Chris Maughan <cmaughan@snarlsoftware.com>
+Date:   Fri Aug 30 15:10:18 2019 +0100
+
+    WIP
+
+diff --git a/m3rdparty/nodegraph/include/nodegraph/model/nodegraph.h b/include/nodegraph/model/nodegraph.h
+similarity index 67%
+rename from m3rdparty/nodegraph/include/nodegraph/model/nodegraph.h
+rename to include/nodegraph/model/nodegraph.h
+index f5b026e..2eb491a 100644
+--- a/m3rdparty/nodegraph/include/nodegraph/model/nodegraph.h
++++ b/include/nodegraph/model/nodegraph.h
+@@ -13,6 +13,55 @@ namespace NodeGraph
+ 
+ using AValue = std::variant<float, double, int64_t, bool, std::string>;
+ 
++inline float a_is_real(const AValue& a) { return std::holds_alternative<float>(a) || std::holds_alternative<double>(a); }
++inline float a_is_string(const AValue& a) { return std::holds_alternative<std::string>(a); }
++inline float a_is_integer(const AValue& a) { return std::holds_alternative<std::int64_t>(a); }
++
++inline double a_as_double(const AValue& a) 
++{ 
++    if (std::holds_alternative<double>(a))
++        return std::get<double>(a);
++    else if (std::holds_alternative<float>(a))
++        return (double)std::get<float>(a);
++    else if (std::holds_alternative<int64_t>(a))
++        return (double)std::get<int64_t>(a);
++    assert(!"?");
++    return 0.0;
++}
++
++inline double a_as_float(const AValue& a) 
++{ 
++    if (std::holds_alternative<double>(a))
++        return (float)std::get<double>(a);
++    else if (std::holds_alternative<float>(a))
++        return std::get<float>(a);
++    else if (std::holds_alternative<int64_t>(a))
++        return (float)std::get<int64_t>(a);
++    assert(!"?");
++    return 0.0f;
++}
++
++inline int64_t a_as_integer(const AValue& a) 
++{ 
++    if (std::holds_alternative<double>(a))
++        return (int64_t)std::get<double>(a);
++    else if (std::holds_alternative<float>(a))
++        return (int64_t)std::get<float>(a);
++    else if (std::holds_alternative<int64_t>(a))
++        return std::get<int64_t>(a);
++    assert(!"?");
++    return 0;
++}
++
++inline std::string a_as_string(const AValue& a) 
++{ 
++    if (std::holds_alternative<std::string>(a))
++        return std::get<std::string>(a);
++    assert(!"?");
++    return "";
++}
++
++
+ class Node;
+ 
+ enum class PinType
